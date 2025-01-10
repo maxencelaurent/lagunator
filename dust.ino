@@ -1,6 +1,9 @@
 #include <RCSwitch.h>
 #include "powermeter.h"
 
+
+// #define __DEBUG_POWER__
+
 /* `current` probe fo the dust extractor  */
 #define DUST_EXT_A_INPUT_PIN A0
 #define DUST_EXT_threshold 1
@@ -13,6 +16,25 @@
 #define MANUAL_SW_STATUS_OUTPUT_PIN 18
 
 #define NB_MACHINES 3
+
+#define RADIAL_SAW_GATE_OUTPUT_PIN 19
+#define RADIAL_SAW_STATUS_INPUT_PIN 5
+#define RADIAL_SAW_A_INPUT_PIN A1
+
+#define RADIAL_SAW_RF_LED_PIN 13
+#define RADIAL_SAW_RF_ON_CODE 6599000ul
+#define RADIAL_SAW_RF_OFF_CODE 6598996ul
+
+
+#define BAND_SAW_GATE_OUTPUT_PIN 20
+#define BAND_SAW_STATUS_INPUT_PIN 6
+#define BAND_SAW_A_INPUT_PIN A2
+
+#define PT_GATE_OUTPUT_PIN 21
+#define PT_STATUS_INPUT_PIN 7
+#define PT_A_INPUT_PIN A3
+
+#define NONE 0
 
 #define _20A 20
 
@@ -33,16 +55,34 @@ public:
     bool isGateOpen;
     bool delayOverflow;
     bool gracefulStop;
+    bool rfStatus;
+    pin_size_t rfStatusPin;
+    unsigned long rfOnCode;
+    unsigned long rfOffCode;
     PowerMeter powermeter;
 
-    Machine(String name, pin_size_t gateOutputPin, pin_size_t statusInputPin, pin_size_t powermeterPin, double threshold, unsigned long graceful_delay)
+    Machine(
+        String name,
+        pin_size_t gateOutputPin,
+        pin_size_t statusInputPin,
+        pin_size_t powermeterPin,
+        double threshold,
+        unsigned long graceful_delay,
+        unsigned long rfOnCode,
+        unsigned long rfOffCode,
+        pin_size_t rfPin
+    )
         : name(name),
           gateOutputPin(gateOutputPin),
           statusInputPin(statusInputPin),
           graceful_delay(graceful_delay),
+          rfStatusPin (rfPin),
+          rfOnCode(rfOnCode),
+          rfOffCode(rfOffCode),
           powermeter(PowerMeter(powermeterPin, _20A, threshold)
                     ) {
         isRunning = false;
+        rfStatus = false;
         isGateOpen = false;
         delayOverflow = false;
     }
@@ -51,13 +91,32 @@ public:
 
 PowerMeter dustPower = PowerMeter(DUST_EXT_A_INPUT_PIN, _20A, DUST_EXT_threshold);
 
+
 Machine machines[NB_MACHINES] = {
     // Scie à onglet, long graceful delay
-    Machine( "Scie à onglet", 19, 5, A1, 0.5, 10000),
+    Machine( "Scie à onglet",
+             RADIAL_SAW_GATE_OUTPUT_PIN,
+             RADIAL_SAW_STATUS_INPUT_PIN,
+             RADIAL_SAW_A_INPUT_PIN,
+             0.5, 10000,
+             RADIAL_SAW_RF_ON_CODE,
+             RADIAL_SAW_RF_OFF_CODE,
+             RADIAL_SAW_RF_LED_PIN
+           ),
     // Band saw
-    Machine( "Scie à ruban ", 20, 6, A2, 0.5, 3000),
+    Machine( "Scie à ruban ",
+             BAND_SAW_GATE_OUTPUT_PIN,
+             BAND_SAW_STATUS_INPUT_PIN,
+             BAND_SAW_A_INPUT_PIN,
+             0.5, 3000,
+             NONE, NONE, NONE),
     // PT
-    Machine("Rabo-Degau   ", 21, 7, A3, 0.5, 3000 )
+    Machine("Rabo-Degau   ",
+            PT_GATE_OUTPUT_PIN,
+            PT_STATUS_INPUT_PIN,
+            PT_A_INPUT_PIN,
+            0.5, 3000,
+            NONE, NONE, NONE )
 };
 
 // RF transmitter
@@ -109,8 +168,6 @@ Raw data: 8968,292,884,288,888,280,892,276,896,848,340,816,356,812,368,804,368,2
 // #define STOP_LAGUNA_CODE 1853712ul
 
 #define LAGUNA_CODE_LENGTH 24
-
-#define THE_CODE 1118888ul
 
 void startDustExtraction() {
     if (!dustPower.isRunning()) {
@@ -175,8 +232,12 @@ void setup() {
         m->powermeter.init();
 
         pinMode(m->statusInputPin, INPUT);
-
         pinMode(m->gateOutputPin, OUTPUT);
+
+        if (m->rfStatusPin) {
+            initLed(m->rfStatusPin);
+        }
+
         // Open the gate
         digitalWrite(m->gateOutputPin, HIGH);
         int counter = 0;
@@ -219,37 +280,49 @@ void rfReceive() {
     if (myReceiveSwitch.available()) {
         unsigned long value = myReceiveSwitch.getReceivedValue();
         // unsigned int length = myReceiveSwitch.getReceivedBitlength();
+        Serial.print("Receive RF: ");
+        Serial.println(value);
 
-        if (value == THE_CODE) {
-            Serial.println("                         got THE_CODE");
-        }
-
+        bool catched = false;
         if (value == START_LAGUNA_CODE || value == STOP_LAGUNA_CODE) {
-          myReceiveSwitch.resetAvailable();
-          return;
+            Serial.println(" => LAGUNA CODE");
+            catched = true;
         }
 
-        output(myReceiveSwitch.getReceivedValue(), myReceiveSwitch.getReceivedBitlength(), myReceiveSwitch.getReceivedDelay(), myReceiveSwitch.getReceivedRawdata(), myReceiveSwitch.getReceivedProtocol());
+        // Check machine codes
+        for (i = 0; i < NB_MACHINES; i++) {
+            Machine* m = &machines[i];
+
+            if (m->rfOnCode && m->rfOnCode == value) {
+                Serial.print("Start ");
+                Serial.println(m->name);
+                m->rfStatus = true;
+                catched = true;
+            }
+
+            if (m->rfOffCode && m->rfOffCode == value) {
+                Serial.print("Stop ");
+                Serial.println(m->name);
+                m->rfStatus = false;
+                catched = true;
+            }
+        }
+
+        if (!catched) {
+            Serial.print("Alien Code ");
+            output(myReceiveSwitch.getReceivedValue(), myReceiveSwitch.getReceivedBitlength(), myReceiveSwitch.getReceivedDelay(), myReceiveSwitch.getReceivedRawdata(), myReceiveSwitch.getReceivedProtocol());
+        }
+
         myReceiveSwitch.resetAvailable();
-
-        // Add optional rf_code_[on | off] in machines
-        /*
-        if (rfStart) {
-            attachInterrupt(digitalPinToInterrupt(MANUAL_SW_PIN), masterOn, FALLING);
-            attachInterrupt(digitalPinToInterrupt(MASTER_OFF_PIN), masterOff, FALLING);
-        }
-        */
     }
 }
 
 void loop() {
-    Serial.println("Loop");
     rfReceive();
 
     if (hasError) {
         doBlink(MANUAL_SW_STATUS_OUTPUT_PIN, 200, 100, 3);
-
-        delay(250);
+        delay(500);
 
         doBlink(MANUAL_SW_STATUS_OUTPUT_PIN, 200, 100, hasError);
     }
@@ -280,7 +353,7 @@ void loop() {
 
         // int machineInput_mV = readMv(m->currentAInputPin);
         m->powermeter.update();
-        bool newIsRunning = m->powermeter.isRunning();
+        bool newIsRunning = m->rfStatus || m->powermeter.isRunning();
 
         m->isGateOpen = digitalRead(m->statusInputPin);
 
@@ -290,6 +363,10 @@ void loop() {
 
         if (newIsRunning) {
             nbRunning += 1;
+        }
+
+        if (m->rfStatusPin) {
+            setPIN(m->rfStatusPin, m->rfStatus);
         }
 
         if (!m->isRunning && newIsRunning) {
@@ -326,6 +403,7 @@ void loop() {
     }
 
 
+#ifdef __DEBUG_POWER__
     dustPower.logHeaders();
     dustPower.log("Laguna       ");
     for (i = 0; i < NB_MACHINES; i++) {
@@ -333,6 +411,7 @@ void loop() {
     }
     Serial.print("Manuel       \t");
     Serial.println(manualSwitch);
+#endif
 
     // step 3: stop dust extractorA
 #ifdef __DEBUG__
