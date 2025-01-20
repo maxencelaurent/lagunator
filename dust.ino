@@ -98,7 +98,7 @@ Machine machines[NB_MACHINES] = {
              RADIAL_SAW_GATE_OUTPUT_PIN,
              RADIAL_SAW_STATUS_INPUT_PIN,
              RADIAL_SAW_A_INPUT_PIN,
-             0.5, 10000,
+             0.5, 5000,
              RADIAL_SAW_RF_ON_CODE,
              RADIAL_SAW_RF_OFF_CODE,
              RADIAL_SAW_RF_LED_PIN
@@ -108,14 +108,14 @@ Machine machines[NB_MACHINES] = {
              BAND_SAW_GATE_OUTPUT_PIN,
              BAND_SAW_STATUS_INPUT_PIN,
              BAND_SAW_A_INPUT_PIN,
-             0.5, 3000,
+             0.5, 5000,
              NONE, NONE, NONE),
     // PT
     Machine("Rabo-Degau   ",
             PT_GATE_OUTPUT_PIN,
             PT_STATUS_INPUT_PIN,
             PT_A_INPUT_PIN,
-            0.5, 3000,
+            0.5, 5000,
             NONE, NONE, NONE )
 };
 
@@ -332,9 +332,7 @@ void loop() {
     // Detect if extractor is running
     dustPower.update();
 
-    // HACK: uncomment once CT
     setPIN(DUST_EXT_STATUS_OUTPUT_PIN, dustPower.isRunning());
-    // END HACK
 
     manualSwitch = !digitalRead(MANUAL_SW_PIN);
     setPIN(MANUAL_SW_STATUS_OUTPUT_PIN, manualSwitch);
@@ -369,16 +367,19 @@ void loop() {
             setPIN(m->rfStatusPin, m->rfStatus);
         }
 
-        if (!m->isRunning && newIsRunning) {
-            // just started
+        if (newIsRunning) {
+            if (!m->isRunning) {
+                // just started
+                Serial.print("OPEN ");
+                Serial.print(m->name);
+                Serial.println("gate");
+            }
             m->isRunning = true;
             m->close_at_millis = 0;
+            m->gracefulStop = false;
+            m->delayOverflow = false;
             // Open gate
             setPIN(m->gateOutputPin, true);
-            Serial.print("OPEN ");
-            Serial.print(m->name);
-            Serial.println("gate");
-
         } else if (m->isRunning && !newIsRunning) {
             // just stopped -> start graceful delay
             m->isRunning = false;
